@@ -15,6 +15,7 @@
 #
 # メモリ上でやれば読み込みは一度で済みますが、大きなログだと
 # メモリの限界が来るため 2pass 方式にしています
+# また 2pass 方式のため pipe や fifo は使えません。
 #
 BEGIN {
 	# $ENV{PERL_TEXT_CSV}='Text::CSV_PP';
@@ -33,41 +34,46 @@ binmode(STDIN, ":utf8");
 binmode(STDOUT, ":utf8");
 binmode(STDERR, ":utf8");
 
-my ($in_Forti, $out_csv) = ('','');
+my ($in_Forti, $out_csv);
 my %field_name;
 my @field_name;
 my $read_lines;
 my $exclude = [];
 
-GetOptions( \my %opt, qw/in=s out=s exclude=s/)
-	or die "引数が異常です";
+GetOptions(\my %opt, qw/in=s out=s exclude=s/)
+	or die "引数が異常です\n";
 
-$in_Forti = $opt{in}; 
-$out_csv = $opt{out}
-	if exists $opt{out};
-$exclude = [ split /,/, $opt{exclude} ];
+die "入力ファイルを指定してください\n"
+	unless exists $opt{in};
+die "$opt{in} :\n入力ファイルが読み込みできません\n"
+	unless -r $opt{in};
+$in_Forti = $opt{in};
 
-($out_csv = $in_Forti)  =~ s/\.[^.]+$/.csv/
-	if ($out_csv eq '');
-print "$out_csv を上書きします。\n" if (-e $out_csv) ;
+exists $opt{out} ?
+	$out_csv = $opt{out} :
+	($out_csv = $in_Forti) =~ s/\.[^.]+$/.csv/;
+
+$exclude = [ split /,/, $opt{exclude} ]
+	if exists $opt{exclude};
+
+print "$out_csv を上書きします。\n" if -e $out_csv;
 
 print " ==> input Forti_log: $in_Forti\n";
 print " ==> output csv:      $out_csv\n";
 
 open my $log_fh, "<:encoding(UTF-8)", $in_Forti
-	or die "ファイルが開けません: $in_Forti :$!";
+	or die "ログファイルが開けません\n $in_Forti :$!\n";
 open my $out_fh, ">:encoding(cp932)", $out_csv
-	or die "出力先のファイルが開けません: $out_csv :$!";
+	or die "出力先のファイルが開けません\n $out_csv :$!\n";
 
 # 項目名を取得
 print " ==> parse field name\n";
 
 $read_lines = 0;
-printf "         line persing (1/2 pass)\r";
+printf "         lines persing (1/2 pass)\r";
 $| = 1;	# 経過出力用 - バッファリンク無効
 while (<$log_fh>) {
-	s/="[^"]+" ?/ /g;
-	s/=[^ ]+ ?/ /g;
+	s/=(?:"[^"]+"|[^ ]+) ?/ /g;
 	my @line = split;
 
 	foreach my $line (@line) {
@@ -78,14 +84,14 @@ while (<$log_fh>) {
 	# 読み込み中行数表示
 	++$read_lines;
 	printf "%8d\r", $read_lines
-		if ($read_lines % 1000 == 0);
+		if ($read_lines % 2000 == 0);
 
 	# 1万行までしか解析しない
-	#last
-	#	if ($. > 10001);
+	# last
+	#	if ($. >= 1000);
 }
 $| = 0;
-printf "%8d\n", $read_lines;
+printf "%8d lines persed \n", $read_lines;
 
 # 不要フィールドの削除
 map {delete $field_name{$_}} @{$exclude};
@@ -97,7 +103,7 @@ foreach my $key (sort {$field_name{$a} <=> $field_name{$b}} keys %field_name){
 
 # 再度、先頭からファイルを読む
 seek ($log_fh, 0, 0)
-	or die ": $in_Forti ファイルの先頭へ戻れませんでした :$!";
+	or die ": $in_Forti ファイルの先頭へ戻れませんでした :$!\n";
 
 my $csv = Text::CSV -> new ({binary => 1,});
 
@@ -105,7 +111,7 @@ print "\n ==> converting\n";
 # 項目名の出力
 $csv->say ($out_fh, \@field_name);
 
-printf "         /%8d line converting (2/2 pass)\r", $read_lines;
+printf "%8s/%8d lines converting (2/2 pass)\r", '', $read_lines;
 $read_lines = 0;
 $| = 1;
 while (<$log_fh>) {
@@ -116,12 +122,11 @@ while (<$log_fh>) {
 	my @line = split /=/;
 	foreach (@line) {
 		# ダブルクォートが二重になるのを防ぐため、内側だけ取ってくる
-		m/^(?:([^" ]*)|"(.*)")(?: ([^ ]*))?$/;
+		m/^(?|([^" ]+)|"(.+)")(?: ([^ ]*))?$/;
+		# m/^(?:("?)(.*?)\1)(?: ([^ ]*))?$/; slow!
 
-		if ( defined $2 ) {
-			push (@tmp, $2, $3);
-		} elsif ( defined $3 ) {
-			push (@tmp, $1, $3);
+		if (defined $2) {
+			push (@tmp, $1, $2);
 		} else {
 			push (@tmp, $_);
 		}
@@ -130,18 +135,17 @@ while (<$log_fh>) {
 	# $column->{項目名} = 値	に変換 (リファレンス)
 	my $column_hash = { @tmp };
 
-	# field_name で並べ替え (リファレンス)
+	# field_name で並べ替え (配列へのリファレンス)
 	my $column_array = [ map {$column_hash->{$_};} @field_name ];
 
 	$csv->say ($out_fh, $column_array); 
 	# 読み込み行数表示
 	++$read_lines;
 	printf "%8d\r", $read_lines
-		if ($read_lines % 1000 == 0);
+		if ($read_lines % 2000 == 0);
 }
 $| = 0;
-printf "%8d\n", $read_lines;
-printf "%8d lines done!\n", $read_lines
+printf "%8d/%8d lines converted \n", $read_lines, $read_lines;
 
 # see
 #
