@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Text::CSV;
+use List::MoreUtils qw/firstidx/;
+use Data::Dumper;
+
+my $i = 0;
+my ($line1,  $line2);
+my ($line1j, $line2j);
+
+my $file1 = "disk-traffic-forward-2022-04-12_1057.log";
+my $file2 = "disk-traffic-forward-2022-04-12_1057_by_perl.csv";
+# my $file2 = "disk-traffic-forward-2022-04-12_1057.csv";
+#
+# my $file1 = "F.log";
+# my $file2 = "F.csv";
+#
+# my @key =('date','time','eventtime','logid','type','subtype','level','vd','srcip','srcname','srcport','srcintf','srcintfrole','dstip','dstport','dstintf','dstintfrole','srccountry','sessionid','proto','action','policyid','policytype','poluuid','trandisp','transip','transport','appid','app','apprisk','applist','duration','sentbyte','rcvdbyte','sentpkt','rcvdpkt','utmaction','countdns','osname','mastersrcmac','srcmac','srcserver','utmref','sentdelta','rcvddelta','srchwvendor','devtype','srcfamily','countapp','srchwversion','unauthusersource','crscore','craction','crlevel','identifier','countweb');
+
+# my $key ='date';
+
+
+open my $in1, "<", $file1;
+open my $in2, "<", $file2;
+
+# open my $out1, ">", "F.log";
+
+my $csv2 = Text::CSV -> new ({binary => 1, });
+my $columns2 = $csv2->getline($in2);
+my @key = $csv2->column_names(@$columns2);
+
+my $key_and_reg = [ map [$_, qr/\b$_=("?)(.+?)(\1)(?: |$)/], @key ];
+
+$i = 0;
+$| = 1;
+while (1){
+	my $have_diff=0;
+
+	# 行の読み込み
+	last 
+		unless (defined ($line1 = <$in1>));
+	$line2 = $csv2->getline_hr ($in2);
+
+	# $key->[0]; key
+	# $key->[1]; regexp
+	for my $key (@$key_and_reg){
+		# 項目の抽出
+		$line1j = ($line1 =~ $key->[1]) ? $2 : '' ;
+ 		chomp $line1j;
+
+ 		$line2j = $line2->{$key->[0]};
+ 		chomp $line2j;
+
+		# 項目の比較
+		unless ($line1j eq $line2j) {
+			# 差異の出力
+			if ($have_diff eq 0) {
+				print "$i -- line\n";
+				$have_diff=1;
+			}
+			printf "key : %s\n", $key->[0];
+			printf "1: %20s\n2: %20s\n", $line1j, $line2j;
+		}
+	}
+	print "$line1\n"
+		if ($have_diff eq 1);
+	
+	print "$i \r"
+		if ($i % 1000 == 0);
+	++$i;
+}
+$| = 0;
+print "$i\n";
+
+close $in1;
+close $in2;
+# close $out1;
+
